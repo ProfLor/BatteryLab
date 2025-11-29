@@ -2,6 +2,9 @@ import requests, yaml, time, sys
 
 BASE_URL = "http://192.168.96.21/atmoweb"
 CFG = "IPP30_TEMP_CNTRL.yaml"
+TIMEOUT_S = 10
+RETRIES = 3
+RETRY_DELAY_S = 2
 
 # Minimal controller for Memmert IPP30 via AtmoWEB.
 # Exit codes: 1=error, 2=not manual, 3=no range
@@ -14,9 +17,41 @@ def cfg():
     except Exception as e:
         print(f"[ERROR] Config read: {e}"); sys.exit(1)
 
+def _get(url, timeout=TIMEOUT_S):
+    """HTTP GET with simple retry on connect/read timeouts. Returns Response or exits."""
+    last_exc = None
+    for i in range(1, RETRIES+1):
+        try:
+            return requests.get(url, timeout=timeout)
+        except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout) as e:
+            last_exc = e
+            print(f"[WARN] Timeout contacting device (attempt {i}/{RETRIES})")
+            time.sleep(RETRY_DELAY_S)
+        except requests.exceptions.ConnectionError as e:
+            last_exc = e
+            print(f"[WARN] Connection error to device (attempt {i}/{RETRIES})")
+            time.sleep(RETRY_DELAY_S)
+        except requests.exceptions.RequestException as e:
+            print(f"[ERROR] HTTP request failed: {e}")
+            sys.exit(1)
+    print("[ERROR] Device not connected or unreachable after retries.")
+    print("[HINT] Check network connection, IP 192.168.96.21, cable/power, and firewall.")
+    sys.exit(1)
+
+def check_device():
+    """Quick preflight check to verify device is reachable."""
+    try:
+        r = requests.get(BASE_URL, timeout=3)
+        # Even non-200 indicates host reachable; only network errors concern us
+        return True
+    except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError):
+        print("[ERROR] Memmert device appears disconnected or offline.")
+        print("[HINT] Ensure the chamber is powered and connected; verify IP and VLAN.")
+        sys.exit(1)
+
 def mode():
     """Return device operating mode (expects 'Manual')."""
-    r = requests.get(f"{BASE_URL}?CurOp=", timeout=5)
+    r = _get(f"{BASE_URL}?CurOp=")
     if r.status_code != 200: print(f"[ERROR] HTTP {r.status_code}"); sys.exit(1)
     t = r.text.strip()
     if "CurOp=" in t: return t.split("CurOp=")[1].split("&")[0].strip()
@@ -25,7 +60,7 @@ def mode():
 
 def state():
     """Fetch (Temp1Read, TempSet_Range). Exits if missing."""
-    r = requests.get(f"{BASE_URL}?Temp1Read=&TempSet_Range=", timeout=5)
+    r = _get(f"{BASE_URL}?Temp1Read=&TempSet_Range=")
     if r.status_code != 200: print(f"[ERROR] HTTP {r.status_code}"); sys.exit(1)
     t = r.text.strip(); cur = None; rng = None
     try:
@@ -44,7 +79,7 @@ def state():
 
 def set_temp(x):
     """Set TempSet to x °C and print immediate readback."""
-    r = requests.get(f"{BASE_URL}?TempSet={x}&Temp1Read=", timeout=5)
+    r = _get(f"{BASE_URL}?TempSet={x}&Temp1Read=")
     if r.status_code != 200: print(f"[ERROR] HTTP {r.status_code}"); sys.exit(1)
     try:
         d = r.json(); sv = d.get("TempSet", x); cv = d.get("Temp1Read")
@@ -115,6 +150,7 @@ def estimate_eta(readings, target):
 def main():
     """Main flow: check mode, validate target, set, monitor, wait."""
     tgt, wait_m, tol = cfg()
+    check_device()
     if mode().lower() not in {"manual","man"}: print("[ERROR] Not in Manual"); sys.exit(2)
     cur, rng = state(); mn, mx = rng["min"], rng["max"]
     print(f"[INFO] Target {tgt} °C | Range {mn}–{mx} °C | Current {cur:.2f} °C | Tol ±{tol} °C")
