@@ -1,15 +1,23 @@
 # Memmert IPP30 AtmoWEB Control
 
-This package provides remote temperature control for a Memmert IPP30 cooled incubator via the AtmoWEB REST interface using Python. The script is compatible with EC-LAB EXTAPP.
+Remote temperature control for Memmert IPP30 cooled incubators via the AtmoWEB REST interface. Features real-time monitoring, ETA prediction, and EC-LAB EXTAPP compatibility.
+
+## Features
+
+- **YAML configuration**: Target temperature, wait time, tolerance
+- **Smart monitoring**: Minute-by-minute updates with live temperature readings
+- **ETA prediction**: Linear regression on recent data to estimate time to target
+- **Progress visualization**: Text-based progress bar (`[#####_______________]`) showing completion percentage
+- **Network resilience**: Automatic retries (3×), configurable timeouts (10s), preflight connectivity checks
+- **Mode validation**: Ensures device is in Manual mode before applying setpoints
+- **Exit codes**: Clear error reporting for automation integration (0=success, 1=error, 2=not manual, 3=no range)
 
 ## Prerequisites
 
-- **Memmert IPP30** with active AtmoWEB REST interface (IP address known, access available)
+- **Memmert IPP30** with AtmoWEB REST interface enabled (IP address accessible)
 - **Network connection** (Ethernet) between control PC and device
-- **Python 3.7+** recommended  
-- **Installed Python modules**:
-  - `requests` (for REST communication)
-  - `pyyaml` (for YAML configurations)
+- **Python 3.7+** (3.11+ recommended)
+- **Python packages**: `requests`, `pyyaml`
 
 ### Installation
 
@@ -40,25 +48,60 @@ The file must be located in the same folder as the script.
 
 ## Usage
 
-1. **Set IP Address:**  
-   Enter the correct IP address of the Memmert IPP30 at the top of `memmert_control.py`.
+### 1. Set IP Address
 
-2. **Configure Parameters:**  
-   Edit the YAML file as needed.
+Edit the `BASE_URL` at the top of `memmert_control.py` to match your device:
 
-3. **Execution:**  
-   - Direct:  
-     ```bash
-     python memmert_control.py
-     ```
-   - Via Batch (e.g., from EC-LAB EXTAPP):  
-     Double-click `run_memmert_control.bat` or set an external program trigger in EC-LAB
+```python
+BASE_URL = "http://192.168.96.21/atmoweb"
+```
 
-4. **Typical Workflow:**  
-   - Script reads target values from YAML, checks range, and sets temperature
-   - Starts the temperature control program
-   - Waits until temperature is reached (±tolerance)
-   - Counts down wait time, then terminates automatically
+### 2. Configure Parameters
+
+Edit `IPP30_TEMP_CNTRL.yaml`:
+
+```yaml
+target_temperature: 37.5  # Target in °C
+wait_time: 15             # Minutes to wait after stabilization
+tolerance: 0.5            # Acceptable deviation in °C
+```
+
+### 3. Run the Script
+
+**Option A: Direct Python**
+
+```bash
+python memmert_control.py
+```
+
+**Option B: Batch Launcher (Recommended for EXTAPP)**
+
+```bash
+run_memmert_control.bat
+```
+
+The batch launcher auto-detects Python (Miniconda, Python.org installs, `py` launcher) or uses `MEMMERT_PYTHON` environment variable if set.
+
+**Option C: From EC-LAB EXTAPP**
+
+Set `run_memmert_control.bat` as an external program trigger in your EC-Lab technique.
+
+### 4. Monitor Progress
+
+Script output shows real-time status with progress bar and ETA:
+
+```text
+[INFO] Target 37.5 °C | Range 0–70 °C | Current 21.34 °C | Tol ±0.5 °C
+[INFO] Set 37.5 °C
+[INFO] Monitoring with 1-minute updates …
+[INFO] [#####_______________] 25.80 °C (Δ-11.70 °C) | ETA ~18.3 min
+[INFO] [##########__________] 31.20 °C (Δ-6.30 °C) | ETA ~10.1 min
+[INFO] [##################__] 36.90 °C (Δ-0.60 °C) | ETA ~1.2 min
+[INFO] Target reached in 19.4 minutes. Waiting 15 min …
+[INFO] Complete.
+```
+
+Each `#` in the progress bar represents 5% completion from start to target temperature.
 
 ## Exit Codes
 
@@ -69,11 +112,29 @@ The file must be located in the same folder as the script.
 | 2    | Device not in Manual mode                                         |
 | 3    | Device did not provide TempSet_Range                              |
 
+## Advanced Configuration
+
+### Python Environment Override
+
+If Python is not in PATH or you want to use a specific installation:
+
+```powershell
+$env:MEMMERT_PYTHON="C:\Users\YourName\AppData\Local\Programs\Python\Python311\python.exe"
+./run_memmert_control.bat
+```
+
+### Network Settings
+
+- **Timeout**: 10 seconds (configurable via `TIMEOUT_S` in script)
+- **Retries**: 3 attempts (configurable via `RETRIES`)
+- **Retry delay**: 2 seconds between attempts
+
 ## Notes & Troubleshooting
 
-- The script validates the target temperature against the **device-provided range** (`TempSet_Range`). If the device does not return this parameter, the script exits with code 3.
-- The device must be in **Manual mode** for setpoints to be applied (per AtmoWEB manual section 4.3).
-- Tolerance is implemented in software for practical control logic, not as a device parameter.
-- For temperature ramps, create complete programs in AtmoCONTROL and start them via REST (`ProgStart`).
+- **Device not found**: Script performs preflight connectivity check. Verify IP address, network connection, power, and firewall settings.
+- **Not in Manual mode**: Device must be in Manual mode for setpoints to be applied (per AtmoWEB manual section 4.3). Script exits with code 2.
+- **Range validation**: Target temperature is validated against device-provided `TempSet_Range`. If unavailable, script exits with code 3.
+- **ETA accuracy**: Linear regression uses a rolling window of last 10 readings. More accurate for steady heating/cooling rates; less accurate during initial transients or near setpoint.
+- **Temperature ramps**: For complex multi-step profiles, create programs in AtmoCONTROL and trigger via REST (`ProgStart`).
 
 ---
