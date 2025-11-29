@@ -12,15 +12,10 @@ Remote temperature control via AtmoWEB REST interface. Features include:
 - Real-time monitoring with ETA estimation (linear regression)
 - Progress bar visualization
 - Robust network handling (retries, timeouts, preflight checks)
-- EC-Lab EXTAPP compatible batch launcher with auto-detection of Python environments
+- BioLogic's EC-Lab$ \circledR $, EXTAPP compatible batch launcher with auto-detection of Python environments
 
 📄 **[Detailed documentation](Memmert/Script/README.md)** | **[Script](Memmert/Script/memmert_control.py)**
 
-### BioLogic Integration
-
-Documentation and reference materials for EC-Lab EXTAPP external application control and climate chamber integration.
-
-📁 **[Documentation](Biologic/)** | Technical notes on VMP3 configuration and EXTAPP usage
 
 ## Quick Start
 
@@ -42,9 +37,7 @@ cd Memmert/Script
 BatteryLab/
 ├── LICENSE
 ├── README.md
-├── Biologic/              # EC-Lab documentation & technical notes
 └── Memmert/
-    ├── Documentation/     # AtmoWEB API references
     └── Script/
         ├── README.md      # Detailed usage instructions
         ├── memmert_control.py

@@ -1,6 +1,6 @@
 # IPP30_TEMP_CNTRL.yaml
 # Multi-step targets with current index. The current set temperature
-# line is marked with: "# <-- current SetTemp"
+# Currently selected target temperature is marked with: "# <-- current SetTemp"
 target_temperatures:
   - 25.0 # <-- current SetTemp
   - 37.5
