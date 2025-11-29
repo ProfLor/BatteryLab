@@ -1,0 +1,100 @@
+# OS and system files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+Desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.old
+*.log
+*.lock
+*.cache
+*.pid
+
+# Compiled and binary files
+*.exe
+*.dll
+*.so
+*.o
+*.a
+*.out
+*.obj
+*.class
+*.pyc
+__pycache__/
+*.pyo
+
+# Archives and compressed files
+*.zip
+*.tar
+*.gz
+*.bz2
+*.7z
+*.rar
+
+# Office and document files
+*.pdf
+*.doc
+*.docx
+*.dot
+*.dotx
+*.xls
+*.xlsx
+*.xlsm
+*.xlw
+*.ppt
+*.pptx
+*.pps
+*.odt
+*.ods
+*.odp
+*.rtf
+*.csv
+
+# Image and media files (optional, uncomment if needed)
+# *.png
+# *.jpg
+# *.jpeg
+# *.gif
+# *.bmp
+# *.tiff
+# *.mp3
+# *.mp4
+# *.wav
+# *.mov
+
+# IDE and editor metadata
+.vscode/
+.idea/
+*.iml
+*.sublime-workspace
+*.sublime-project
+
+# Build directories
+build/
+dist/
+out/
+bin/
+obj/
+target/
+
+# Node and Python environments (optional)
+node_modules/
+.env/
+venv/
+.envrc
+.env.local
+.venv/
+
+# Backup and autosave files
+*~
+*.bak
+*.orig
+*.autosave
+*.tmp.*

@@ -1,0 +1,5 @@
+# IPP30_TEMP_CNTRL.yaml
+# Example: Target temperature and wait time in minutes, including tolerance
+target_temperature: 37.5    # Setpoint in °C
+wait_time: 15               # Wait time after reaching target temperature in minutes
+tolerance: 0.5              # Allowable deviation in °C (optional)
