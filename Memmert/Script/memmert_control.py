@@ -57,6 +57,61 @@ def set_temp(x):
         else:
             print(f"[INFO] Set {x} °C")
 
+def progress_bar(current, target, start, width=20):
+    """Generate progress bar showing temperature progress.
+    Each character represents 5% of progress from start to target.
+    """
+    if abs(target - start) < 0.1:  # Avoid division by zero
+        return "[" + "#" * width + "]"
+    
+    progress = (current - start) / (target - start)
+    progress = max(0, min(1, progress))  # Clamp between 0 and 1
+    filled = int(progress * width)
+    bar = "#" * filled + "_" * (width - filled)
+    return f"[{bar}]"
+
+def estimate_eta(readings, target):
+    """Estimate time to reach target using linear regression on recent readings.
+    readings: list of (timestamp, temp) tuples
+    Returns: estimated minutes to target, or None if insufficient data or moving away
+    """
+    if len(readings) < 3:
+        return None
+    
+    # Use last N readings for trend (max 10 to adapt to recent behavior)
+    window = readings[-10:]
+    times = [(t - window[0][0]) / 60.0 for t, _ in window]  # minutes from first reading
+    temps = [temp for _, temp in window]
+    
+    # Linear regression: temp = a * time + b
+    n = len(times)
+    sum_t = sum(times)
+    sum_temp = sum(temps)
+    sum_t2 = sum(t * t for t in times)
+    sum_t_temp = sum(times[i] * temps[i] for i in range(n))
+    
+    denom = n * sum_t2 - sum_t * sum_t
+    if abs(denom) < 1e-9:
+        return None
+    
+    slope = (n * sum_t_temp - sum_t * sum_temp) / denom
+    intercept = (sum_temp - slope * sum_t) / n
+    
+    # Check if we're moving toward target
+    current_temp = temps[-1]
+    delta = target - current_temp
+    
+    if abs(slope) < 0.01:  # Nearly flat, very slow change
+        return None
+    
+    if (delta > 0 and slope < 0) or (delta < 0 and slope > 0):
+        # Moving away from target
+        return None
+    
+    # Estimate time from current point
+    time_to_target = delta / slope
+    return max(0, time_to_target)
+
 def main():
     """Main flow: check mode, validate target, set, monitor, wait."""
     tgt, wait_m, tol = cfg()
@@ -65,11 +120,34 @@ def main():
     print(f"[INFO] Target {tgt} °C | Range {mn}–{mx} °C | Current {cur:.2f} °C | Tol ±{tol} °C")
     if not (mn <= tgt <= mx): print(f"[ERROR] Target {tgt} °C outside [{mn},{mx}]"); sys.exit(1)
     set_temp(tgt)
-    print("[INFO] Monitoring …")
+    print("[INFO] Monitoring with 1-minute updates …")
+    
+    # Track temperature readings for trend analysis
+    readings = []
+    start_time = time.time()
+    start_temp = cur  # Store initial temperature for progress calculation
+    
     while True:
-        cur, _ = state(); print(f"[INFO] Current {cur:.2f} °C")
-        if abs(cur - tgt) <= tol: print(f"[INFO] Target reached. Waiting {wait_m} min …"); break
-        time.sleep(10)
+        cur, _ = state()
+        current_time = time.time()
+        readings.append((current_time, cur))
+        
+        # Estimate time to target
+        eta_min = estimate_eta(readings, tgt)
+        eta_str = f" | ETA ~{eta_min:.1f} min" if eta_min is not None else ""
+        
+        # Generate progress bar
+        bar = progress_bar(cur, tgt, start_temp)
+        
+        print(f"[INFO] {bar} {cur:.2f} °C (Δ{cur-tgt:+.2f} °C){eta_str}")
+        
+        if abs(cur - tgt) <= tol:
+            elapsed = (current_time - start_time) / 60
+            print(f"[INFO] Target reached in {elapsed:.1f} minutes. Waiting {wait_m} min …")
+            break
+        
+        time.sleep(60)  # Check every minute
+    
     time.sleep(wait_m*60); print("[INFO] Complete.")
 
 if __name__ == "__main__": main()
