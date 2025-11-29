@@ -1,5 +1,10 @@
 # IPP30_TEMP_CNTRL.yaml
-# Example: Target temperature and wait time in minutes, including tolerance
-target_temperature: 37.5    # Setpoint in °C
+# Multi-step targets with current index. The current set temperature
+# line is marked with: "# <-- current SetTemp"
+target_temperatures:
+  - 25.0 # <-- current SetTemp
+  - 37.5
+  - 15.0  
+current_set_index: 0        # Index into target_temperatures (0-based)
 wait_time: 15               # Wait time after reaching target temperature in minutes
 tolerance: 0.5              # Allowable deviation in °C (optional)

@@ -5,6 +5,7 @@ Remote temperature control for Memmert IPP30 cooled incubators via the AtmoWEB R
 ## Features
 
 - **YAML configuration**: Target temperature, wait time, tolerance
+- **Multi-setpoint sequencing**: Configure `target_temperatures` (list) with `current_set_index`; script advances and wraps to the first after the last
 - **Smart monitoring**: Minute-by-minute updates with live temperature readings
 - **ETA prediction**: Linear regression on recent data to estimate time to target
 - **Progress visualization**: Text-based progress bar (`[#####_______________]`) showing completion percentage
@@ -61,20 +62,24 @@ BASE_URL = "http://192.168.96.21/atmoweb"
 Edit `IPP30_TEMP_CNTRL.yaml`:
 
 ```yaml
-target_temperature: 37.5  # Target in °C
-wait_time: 15             # Minutes to wait after stabilization
-tolerance: 0.5            # Acceptable deviation in °C
+target_temperatures:
+  - 25.0
+  - 37.5  # <-- current SetTemp
+  - 15.0
+current_set_index: 1        # 0-based index of active set temperature
+wait_time: 15               # Minutes to wait after stabilization
+tolerance: 0.5              # Acceptable deviation in °C
 ```
 
 ### 3. Run the Script
 
-**Option A: Direct Python**
+#### Option A: Direct Python
 
 ```bash
 python memmert_control.py
 ```
 
-**Option B: Batch Launcher (Recommended for EXTAPP)**
+#### Option B: Batch Launcher (Recommended for EXTAPP)
 
 ```bash
 run_memmert_control.bat
@@ -82,7 +87,7 @@ run_memmert_control.bat
 
 The batch launcher auto-detects Python (Miniconda, Python.org installs, `py` launcher) or uses `MEMMERT_PYTHON` environment variable if set.
 
-**Option C: From EC-LAB EXTAPP**
+#### Option C: From EC-LAB EXTAPP
 
 Set `run_memmert_control.bat` as an external program trigger in your EC-Lab technique.
 
@@ -102,6 +107,11 @@ Script output shows real-time status with progress bar and ETA:
 ```
 
 Each `#` in the progress bar represents 5% completion from start to target temperature.
+
+### Multi-setpoint behavior
+
+- After completing a run, the script increments `current_set_index` and rewrites the YAML marking the new active entry.
+- When the last entry is reached, the index wraps back to `0` on the next run.
 
 ## Exit Codes
 

@@ -1,4 +1,4 @@
-import requests, yaml, time, sys
+import requests, yaml, time, sys, os
 
 BASE_URL = "http://192.168.96.21/atmoweb"
 CFG = "IPP30_TEMP_CNTRL.yaml"
@@ -10,12 +10,54 @@ RETRY_DELAY_S = 2
 # Exit codes: 1=error, 2=not manual, 3=no range
 
 def cfg():
-    """Load YAML config -> (target °C, wait min, tolerance °C)."""
+    """Load YAML config -> (target °C, wait min, tolerance °C, config dict).
+    Supports legacy single 'target_temperature' and new list 'target_temperatures' with 'current_set_index'.
+    """
     try:
-        c = yaml.safe_load(open(CFG, "r", encoding="utf-8")) or {}
-        return float(c["target_temperature"]), int(c.get("wait_time", 0)), float(c.get("tolerance", 0.5))
+        with open(CFG, "r", encoding="utf-8") as f:
+            c = yaml.safe_load(f) or {}
+        wait_m = int(c.get("wait_time", 0))
+        tol = float(c.get("tolerance", 0.5))
+        if "target_temperatures" in c:
+            temps = c.get("target_temperatures") or []
+            if not isinstance(temps, list) or not temps:
+                print("[ERROR] 'target_temperatures' must be a non-empty list"); sys.exit(1)
+            idx = int(c.get("current_set_index", 0))
+            if not (0 <= idx < len(temps)):
+                print(f"[ERROR] current_set_index {idx} out of range [0,{len(temps)-1}]"); sys.exit(1)
+            tgt = float(temps[idx])
+            return tgt, wait_m, tol, {"temps": temps, "idx": idx, "raw": c}
+        else:
+            tgt = float(c["target_temperature"])  # legacy
+            return tgt, wait_m, tol, {"temps": [tgt], "idx": 0, "raw": c}
     except Exception as e:
         print(f"[ERROR] Config read: {e}"); sys.exit(1)
+
+def _render_cfg(temps, idx, wait_m, tol):
+    """Render YAML string with inline comment on current set temperature."""
+    lines = []
+    lines.append("# IPP30_TEMP_CNTRL.yaml")
+    lines.append("# Multi-step targets with current index. The current set temperature")
+    lines.append("# line is marked with: \"# <-- current SetTemp\"")
+    lines.append("target_temperatures:")
+    for i, t in enumerate(temps):
+        if i == idx:
+            lines.append(f"  - {float(t)}  # <-- current SetTemp")
+        else:
+            lines.append(f"  - {float(t)}")
+    lines.append(f"current_set_index: {idx}        # Index into target_temperatures (0-based)")
+    lines.append(f"wait_time: {int(wait_m)}               # Wait time after reaching target temperature in minutes")
+    lines.append(f"tolerance: {float(tol)}              # Allowable deviation in °C (optional)")
+    return "\n".join(lines) + "\n"
+
+def _write_cfg(temps, idx, wait_m, tol):
+    """Write updated YAML with comment indicating current set temperature."""
+    try:
+        s = _render_cfg(temps, idx, wait_m, tol)
+        with open(CFG, "w", encoding="utf-8") as f:
+            f.write(s)
+    except Exception as e:
+        print(f"[WARN] Failed to write updated config: {e}")
 
 def _get(url, timeout=TIMEOUT_S):
     """HTTP GET with simple retry on connect/read timeouts. Returns Response or exits."""
@@ -149,9 +191,8 @@ def estimate_eta(readings, target):
 
 def main():
     """Main flow: check mode, validate target, set, monitor, wait."""
-    tgt, wait_m, tol = cfg()
+    tgt, wait_m, tol, cfg_obj = cfg()
     check_device()
-    if mode().lower() not in {"manual","man"}: print("[ERROR] Not in Manual"); sys.exit(2)
     cur, rng = state(); mn, mx = rng["min"], rng["max"]
     print(f"[INFO] Target {tgt} °C | Range {mn}–{mx} °C | Current {cur:.2f} °C | Tol ±{tol} °C")
     if not (mn <= tgt <= mx): print(f"[ERROR] Target {tgt} °C outside [{mn},{mx}]"); sys.exit(1)
@@ -185,5 +226,13 @@ def main():
         time.sleep(60)  # Check every minute
     
     time.sleep(wait_m*60); print("[INFO] Complete.")
+
+    # Advance to next set temperature only after successful completion
+    temps = cfg_obj.get("temps", [])
+    idx = cfg_obj.get("idx", 0)
+    if len(temps) > 1:
+        next_idx = (idx + 1) % len(temps)
+        print(f"[INFO] Advancing set index {idx} -> {next_idx}")
+        _write_cfg(temps, next_idx, wait_m, tol)
 
 if __name__ == "__main__": main()
