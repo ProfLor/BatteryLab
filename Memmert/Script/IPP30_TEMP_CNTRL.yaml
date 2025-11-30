@@ -1,10 +1,34 @@
 # IPP30_TEMP_CNTRL.yaml
-# Multi-step targets with current index. The current set temperature
-# Currently selected target temperature is marked with: "# <-- current SetTemp"
+# Configuration for Memmert IPP30 temperature control
+
+# Target temperature sequence
 target_temperatures:
-  - 25.0 # <-- current SetTemp
-  - 37.5
-  - 15.0  
-current_set_index: 0        # Index into target_temperatures (0-based)
-wait_time: 15               # Wait time after reaching target temperature in minutes
-tolerance: 0.5              # Allowable deviation in °C (optional)
+  - 0.0
+  - 70.0  # <-- current SetTemp
+  - 0.0
+
+# Active setpoint index (0-based)
+current_set_index: 1
+
+# Wait time after reaching target (minutes)
+wait_time: 1
+
+# Temperature tolerance for target reached (°C)
+tolerance: 0.1
+
+# ETA prediction model: 1=Exponential (least-squares τ fit), 2=EKF (Extended Kalman Filter)
+eta_model: 2
+
+# Update tau with EKF estimates: 0=no (keep user values), 1=yes (override with learned values)
+tau_override: 1
+
+# Heating time constant (minutes)
+tau_heating: 12.089613195912495
+tau_heating_info: "Updated 2025-11-30 23:48:28 | Start T=22.0°C"
+
+# Cooling time constant (minutes)
+tau_cooling: 14.620473441372633
+tau_cooling_info: "Updated 2025-12-01 00:01:57 | Start T=22.0°C"
+
+# Sampling interval for temperature readings (minutes)
+dt_minutes: 1.0

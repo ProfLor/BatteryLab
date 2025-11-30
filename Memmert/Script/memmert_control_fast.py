@@ -2,9 +2,9 @@ import requests, yaml, time, sys, math
 try: import numpy as np
 except: np = None
 
-# Production controller for Memmert IPP30 temperature chamber
-BASE_URL="http://192.168.96.21/atmoweb"; CFG="IPP30_TEMP_CNTRL.yaml"
-TIMEOUT_S=10; RETRIES=3; RETRY_DELAY_S=2
+# Fast-mode controller for local simulator (100x accelerated dynamics)
+BASE_URL="http://127.0.0.1:8000/atmoweb"; CFG="IPP30_TEMP_CNTRL.yaml"
+TIMEOUT_S=5; RETRIES=3; RETRY_DELAY_S=1; FAST=100.0
 
 def cfg():
     """Load config: returns (target, wait_min, tolerance, config_dict)"""
@@ -75,11 +75,11 @@ def estimate_eta_ekf(readings,target,tau_h,tau_c,dt):
         x_pred=np.array([a*Tp+(1-a)*Tinf,x[1]]); P_pred=A@P@A.T+Q
         # Update with gain limiting
         K=(P_pred@H)/(H@P_pred@H+R)
-        K_lim=np.array([K[0],np.clip(K[1],-0.5,0.5)])  # Limit tau gain
+        K_lim=np.array([K[0],np.clip(K[1],-0.05,0.05)])  # Limit tau gain
         x=x_pred+K_lim*(Tm-H@x_pred); P=P_pred-np.outer(K_lim,K_lim)*(H@P_pred@H+R)
     tau=max(float(x[1]),1e-3); err=abs(cur-Tinf)
-    if err<0.1: return 0.0,{"tau":tau}
-    return max(0.0,-tau*np.log(0.1/err)),{"tau":tau}
+    if err<0.01: return 0.0,{"tau":tau}
+    return max(0.0,-tau*np.log(0.01/err)),{"tau":tau}
 
 def estimate_eta_exp(readings,target,tau_h,tau_c,tol):
     """Exponential model with fixed tau from config"""
@@ -88,7 +88,7 @@ def estimate_eta_exp(readings,target,tau_h,tau_c,tol):
     heating=target>cur; Tinf=float(target)
     tau=float(tau_h if heating else tau_c)
     # Optional: fit tau from data (least-squares on log-transformed)
-    min_delta=max(tol*2,0.1)
+    min_delta=max(tol*2,0.01)
     if len(w)>=3:
         t0=w[0][0]; pts=[]
         for t,T in w:
@@ -102,8 +102,8 @@ def estimate_eta_exp(readings,target,tau_h,tau_c,tol):
                 slope=(n*sty-st*sy)/denom
                 if slope<-1e-6: tau=-1.0/slope
     err=abs(cur-Tinf)
-    if err<0.1: return 0.0,{"tau":tau}
-    return max(0.0,-tau*math.log(0.1/err)),{"tau":tau}
+    if err<0.01: return 0.0,{"tau":tau}
+    return max(0.0,-tau*math.log(0.01/err)),{"tau":tau}
 
 def write_config(temps,idx,c):
     """Write config YAML with all sections"""
@@ -129,16 +129,18 @@ def write_config(temps,idx,c):
 def main():
     tgt,wait_m,tol,cfg_obj=cfg(); cur,rng=get_state(); mn,mx=rng['min'],rng['max']
     c=cfg_obj['c']
-    print(f"[INFO] Target {tgt}°C | Range {mn}–{mx}°C | Current {cur:.2f}°C | Tol ±{tol}°C")
+    print(f"[INFO] [FASTx{int(FAST)}] Target {tgt}°C | Range {mn}–{mx}°C | Current {cur:.2f}°C | Tol ±{tol}°C")
     if not(mn<=tgt<=mx): print(f"[ERROR] Target {tgt}°C outside [{mn},{mx}]"); sys.exit(1)
     set_target(tgt)
-    dt_min=float(c.get('dt_minutes',1.0))
-    tau_h,tau_c=float(c.get('tau_heating',10.0)),float(c.get('tau_cooling',10.0))
-    sleep_s=max(5,dt_min*60.0); start_temp=cur
+    # Scale parameters for FAST mode
+    dt_min=max(0.05,float(c.get('dt_minutes',1.0))/FAST)
+    tau_h,tau_c=max(0.001,float(c.get('tau_heating',10.0))/FAST),max(0.001,float(c.get('tau_cooling',10.0))/FAST)
+    wait_scaled=max(0,int(round(wait_m/FAST)))
+    sleep_s=max(0.5,dt_min*60.0); start_temp=cur
     em=int(c.get('eta_model',1))
     if em==2: print("[INFO] ETA Model: Extended Kalman Filter (EKF) | T(t)=T∞+(T₀-T∞)e^(-t/τ)")
     else: print(f"[INFO] ETA Model: Exponential | T(t)=T∞+(T₀-T∞)e^(-t/τ), τ={(tau_h if tgt>start_temp else tau_c):.2f}m")
-    print(f"[INFO] Monitoring with {dt_min:.2f}m updates …" if dt_min>=1.0 else f"[INFO] Monitoring with {int(sleep_s)}s updates …")
+    print(f"[INFO] Monitoring with {dt_min:.2f}m updates (FAST x{int(FAST)}) …")
     
     readings=[]; start=time.time(); tau_h_est,tau_c_est=tau_h,tau_c
     while True:
@@ -146,20 +148,21 @@ def main():
         if em==2:
             eta,ex=estimate_eta_ekf(readings,tgt,tau_h_est,tau_c_est,dt_min); tag='[EKF]'
             tau_show=ex.get('tau',tau_h if tgt>start_temp else tau_c)
-            if tau_show>0.1:
+            if tau_show>0.01:
                 if tgt>start_temp: tau_h_est=tau_show
                 else: tau_c_est=tau_show
             eta_str=f"ETA~{eta:.1f}m" if eta else "ETA~--"; param_str=f" τ={tau_show:.2f}m"
         else:
             eta,ex=estimate_eta_exp(readings,tgt,tau_h,tau_c,tol); tag='[EXP]'
             eta_str=f"ETA~{eta:.1f}m" if eta else "ETA~--"; param_str=""
-        print(f"[INFO] {progress_bar(cur,tgt,start_temp)} {tag} {eta_str} | T={cur:.2f}°C{param_str}")
-        if abs(cur-tgt)<=tol: print(f"[INFO] Target reached in {(now-start)/60:.1f}m. Waiting {wait_m}m …"); break
+        ts=time.strftime("%H:%M:%S")
+        print(f"[{ts}] {progress_bar(cur,tgt,start_temp)} {tag} {eta_str} | T={cur:.2f}°C{param_str}")
+        if abs(cur-tgt)<=tol: print(f"[INFO] Target reached in {(now-start)/60:.1f}m. Waiting {wait_scaled}m …"); break
         time.sleep(sleep_s)
-    time.sleep(wait_m*60); print("[INFO] Complete.")
+    time.sleep(wait_scaled*60); print("[INFO] Complete.")
     
     # Log run history
-    heating=tgt>start_temp; final_tau=tau_h_est if heating else tau_c_est
+    heating=tgt>start_temp; final_tau=(tau_h_est if heating else tau_c_est)*FAST
     ts=time.strftime("%Y-%m-%d %H:%M:%S"); model="EKF" if em==2 else "EXP"; mode="heating" if heating else "cooling"
     try:
         with open("run_history.csv","a") as f:
@@ -170,11 +173,11 @@ def main():
     
     # Update tau if enabled (only from ambient, idx==0)
     if int(c.get('tau_override',0))==1 and cfg_obj['idx']==0:
-        final_tau=tau_h_est if heating else tau_c_est
+        final_tau_unscaled=(tau_h_est if heating else tau_c_est)*FAST
         ts=time.strftime("%Y-%m-%d %H:%M:%S")
         key,info_key=("tau_heating","tau_heating_info") if heating else ("tau_cooling","tau_cooling_info")
-        print(f"[INFO] Updating {key} to {final_tau:.2f}m (learned from EKF)")
-        c[key],c[info_key]=final_tau,f"Updated {ts} | Start T={start_temp:.1f}°C"
+        print(f"[INFO] Updating {key} to {final_tau_unscaled:.2f}m (learned from EKF)")
+        c[key],c[info_key]=final_tau_unscaled,f"Updated {ts} | Start T={start_temp:.1f}°C"
     
     # Advance setpoint or write tau updates
     temps,idx=cfg_obj['temps'],cfg_obj['idx']

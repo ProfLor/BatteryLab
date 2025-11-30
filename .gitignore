@@ -12,6 +12,7 @@ Desktop.ini
 *.swo
 *.bak
 *.old
+*_old*
 *.log
 *.lock
 *.cache
