@@ -1,34 +1,17 @@
 # IPP30_TEMP_CNTRL.yaml
 # Configuration for Memmert IPP30 temperature control
 
-# Target temperature sequence
-target_temperatures:
+target_temperatures:  # Temperature sequence
   - 0.0
   - 70.0  # <-- current SetTemp
   - 0.0
-
-# Active setpoint index (0-based)
-current_set_index: 1
-
-# Wait time after reaching target (minutes)
-wait_time: 1
-
-# Temperature tolerance for target reached (°C)
-tolerance: 0.1
-
-# ETA prediction model: 1=Exponential (least-squares τ fit), 2=EKF (Extended Kalman Filter)
-eta_model: 2
-
-# Update tau with EKF estimates: 0=no (keep user values), 1=yes (override with learned values)
-tau_override: 1
-
-# Heating time constant (minutes)
-tau_heating: 12.089613195912495
+current_set_index: 1  # Active setpoint (0-based)
+wait_time: 1  # Minutes to wait after reaching target
+tolerance: 0.2  # Temperature tolerance (°C)
+eta_model: 1  # 1=Exponential, 2=EKF
+tau_override: 1  # 1=update tau with EKF, 0=keep user values
+tau_heating: 12.089613195912495  # Heating time constant (minutes)
 tau_heating_info: "Updated 2025-11-30 23:48:28 | Start T=22.0°C"
-
-# Cooling time constant (minutes)
-tau_cooling: 14.620473441372633
-tau_cooling_info: "Updated 2025-12-01 00:01:57 | Start T=22.0°C"
-
-# Sampling interval for temperature readings (minutes)
-dt_minutes: 1.0
+tau_cooling: 14.620473441372633  # Cooling time constant (minutes)
+tau_cooling_info: "Updated 2025-12-01 00:32:04 | Start T=0.0°C"
+dt_minutes: 1.0  # Sampling interval (minutes)

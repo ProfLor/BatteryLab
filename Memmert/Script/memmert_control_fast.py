@@ -5,23 +5,36 @@ except: np = None
 # Fast-mode controller for local simulator (100x accelerated dynamics)
 BASE_URL="http://127.0.0.1:8000/atmoweb"; CFG="IPP30_TEMP_CNTRL.yaml"
 TIMEOUT_S=5; RETRIES=3; RETRY_DELAY_S=1; FAST=100.0
+TARGET_THRESHOLD=0.01  # °C threshold for "target reached" (tighter for FAST mode)
+
+class ConfigError(Exception): pass
+class DeviceError(Exception): pass
 
 def cfg():
     """Load config: returns (target, wait_min, tolerance, config_dict)"""
     try:
-        c=yaml.safe_load(open(CFG,"r",encoding="utf-8")) or {}
-        wait_m=int(c.get("wait_time",0)); tol=float(c.get("tolerance",0.5))
-        # Ensure tau_info keys exist for persistence
-        for k in ['tau_heating_info','tau_cooling_info']:
-            if k not in c: c[k]=''
-        if "target_temperatures" in c:
-            temps=c["target_temperatures"]
-            if not temps or not isinstance(temps,list): print("[ERROR] target_temperatures must be non-empty list"); sys.exit(1)
-            idx=int(c.get("current_set_index",0))
-            if not(0<=idx<len(temps)): print(f"[ERROR] current_set_index {idx} out of range"); sys.exit(1)
-            return float(temps[idx]),wait_m,tol,{"temps":temps,"idx":idx,"c":c}
-        return float(c["target_temperature"]),wait_m,tol,{"temps":[c["target_temperature"]],"idx":0,"c":c}
-    except Exception as e: print(f"[ERROR] Config: {e}"); sys.exit(1)
+        with open(CFG,"r",encoding="utf-8") as f:
+            c=yaml.safe_load(f) or {}
+    except Exception as e:
+        raise ConfigError(f"Failed to load {CFG}: {e}")
+    
+    wait_m=int(c.get("wait_time",0)); tol=float(c.get("tolerance",0.5))
+    # Ensure tau_info keys exist for persistence
+    for k in ['tau_heating_info','tau_cooling_info']:
+        if k not in c: c[k]=''
+    
+    if "target_temperatures" in c:
+        temps=c["target_temperatures"]
+        if not temps or not isinstance(temps,list):
+            raise ConfigError("target_temperatures must be non-empty list")
+        idx=int(c.get("current_set_index",0))
+        if not(0<=idx<len(temps)):
+            raise ConfigError(f"current_set_index {idx} out of range [0,{len(temps)-1}]")
+        return float(temps[idx]),wait_m,tol,{"temps":temps,"idx":idx,"c":c}
+    
+    if "target_temperature" not in c:
+        raise ConfigError("Missing both target_temperatures and target_temperature")
+    return float(c["target_temperature"]),wait_m,tol,{"temps":[c["target_temperature"]],"idx":0,"c":c}
 
 def http_get(url):
     """HTTP GET with retry logic"""
@@ -29,28 +42,28 @@ def http_get(url):
         try: return requests.get(url,timeout=TIMEOUT_S)
         except (requests.exceptions.Timeout,requests.exceptions.ConnectionError) as e:
             if i<RETRIES: print(f"[WARN] Retry {i}/{RETRIES}"); time.sleep(RETRY_DELAY_S)
-        except Exception as e: print(f"[ERROR] HTTP: {e}"); sys.exit(1)
-    print("[ERROR] Unreachable"); sys.exit(1)
+            else: raise DeviceError(f"Device unreachable after {RETRIES} retries")
+        except requests.exceptions.RequestException as e:
+            raise DeviceError(f"HTTP request failed: {e}")
 
 def get_state():
     """Returns (current_temp, range_dict)"""
     r=http_get(f"{BASE_URL}?Temp1Read=&TempSet_Range=")
-    if r.status_code!=200: print(f"[ERROR] HTTP {r.status_code}"); sys.exit(1)
+    if r.status_code!=200:
+        raise DeviceError(f"HTTP {r.status_code}")
     try:
         d=r.json()
         cur=float(d["Temp1Read"])
         rng={"min":float(d["TempSet_Range"]["min"]),"max":float(d["TempSet_Range"]["max"])}
         return cur,rng
-    except:
-        t=r.text.strip()
-        cur=float(t.split("Temp1Read=")[1].split("&")[0]) if "Temp1Read=" in t else None
-        if cur is None: print("[ERROR] No Temp1Read"); sys.exit(1)
-        print("[ERROR] No TempSet_Range"); sys.exit(3)
+    except (KeyError,ValueError,TypeError) as e:
+        raise DeviceError(f"Invalid device response: {e}")
 
 def set_target(temp):
     """Set target temperature"""
     r=http_get(f"{BASE_URL}?TempSet={temp}")
-    if r.status_code!=200: print(f"[ERROR] HTTP {r.status_code}"); sys.exit(1)
+    if r.status_code!=200:
+        raise DeviceError(f"Failed to set target: HTTP {r.status_code}")
 
 def progress_bar(cur,tgt,start,w=20):
     """Progress bar from start to target"""
@@ -77,30 +90,18 @@ def estimate_eta_ekf(readings,target,tau_h,tau_c,dt):
         K=(P_pred@H)/(H@P_pred@H+R)
         K_lim=np.array([K[0],np.clip(K[1],-0.05,0.05)])  # Limit tau gain
         x=x_pred+K_lim*(Tm-H@x_pred); P=P_pred-np.outer(K_lim,K_lim)*(H@P_pred@H+R)
+        P=0.5*(P+P.T)  # Enforce symmetry
+        P[P<1e-6]=1e-6  # Prevent negative eigenvalues
     tau=max(float(x[1]),1e-3); err=abs(cur-Tinf)
     if err<0.01: return 0.0,{"tau":tau}
     return max(0.0,-tau*np.log(0.01/err)),{"tau":tau}
 
 def estimate_eta_exp(readings,target,tau_h,tau_c,tol):
-    """Exponential model with fixed tau from config"""
+    """Exponential model with fixed tau from config (no fitting)"""
     if not readings: return None,{}
     w=readings[-10:]; T0,cur=w[0][1],w[-1][1]
     heating=target>cur; Tinf=float(target)
     tau=float(tau_h if heating else tau_c)
-    # Optional: fit tau from data (least-squares on log-transformed)
-    min_delta=max(tol*2,0.01)
-    if len(w)>=3:
-        t0=w[0][0]; pts=[]
-        for t,T in w:
-            if abs(T0-Tinf)>min_delta and abs(T-Tinf)>min_delta:
-                pts.append(((t-t0)/60.0,math.log(abs((T-Tinf)/(T0-Tinf)))))
-        if len(pts)>=3:
-            n=len(pts); st,sy=sum(t for t,_ in pts),sum(y for _,y in pts)
-            st2,sty=sum(t*t for t,_ in pts),sum(t*y for t,y in pts)
-            denom=n*st2-st*st
-            if abs(denom)>1e-9:
-                slope=(n*sty-st*sy)/denom
-                if slope<-1e-6: tau=-1.0/slope
     err=abs(cur-Tinf)
     if err<0.01: return 0.0,{"tau":tau}
     return max(0.0,-tau*math.log(0.01/err)),{"tau":tau}
@@ -108,29 +109,54 @@ def estimate_eta_exp(readings,target,tau_h,tau_c,tol):
 def write_config(temps,idx,c):
     """Write config YAML with all sections"""
     lines=["# IPP30_TEMP_CNTRL.yaml\n# Configuration for Memmert IPP30 temperature control\n",
-           "# Target temperature sequence\ntarget_temperatures:"]
+           "target_temperatures:  # Temperature sequence"]
     for i,t in enumerate(temps): lines.append(f"  - {float(t)}" + ("  # <-- current SetTemp" if i==idx else ""))
-    lines.extend(["",f"# Active setpoint index (0-based)\ncurrent_set_index: {idx}","",
-                  f"# Wait time after reaching target (minutes)\nwait_time: {int(c.get('wait_time',0))}","",
-                  f"# Temperature tolerance for target reached (°C)\ntolerance: {float(c.get('tolerance',0.5))}","",
-                  "# ETA prediction model: 1=Exponential (least-squares τ fit), 2=EKF (Extended Kalman Filter)",
-                  f"eta_model: {int(c.get('eta_model',1))}","",
-                  "# Update tau with EKF estimates: 0=no (keep user values), 1=yes (override with learned values)",
-                  f"tau_override: {int(c.get('tau_override',0))}",""])
+    lines.extend([f"current_set_index: {idx}  # Active setpoint (0-based)",
+                  f"wait_time: {int(c.get('wait_time',0))}  # Minutes to wait after reaching target",
+                  f"tolerance: {float(c.get('tolerance',0.5))}  # Temperature tolerance (°C)",
+                  f"eta_model: {int(c.get('eta_model',1))}  # 1=Exponential, 2=EKF",
+                  f"tau_override: {int(c.get('tau_override',0))}  # 1=update tau with EKF, 0=keep user values"])
     for mode,key,info_key in [("heating","tau_heating","tau_heating_info"),("cooling","tau_cooling","tau_cooling_info")]:
         tau,info=float(c.get(key,10.0)),c.get(info_key,'')
-        lines.append(f"# {mode.capitalize()} time constant (minutes)\n{key}: {tau}")
+        lines.append(f"{key}: {tau}  # {mode.capitalize()} time constant (minutes)")
         if info: lines.append(f'{info_key}: "{info}"')
-        lines.append("")
-    lines.append(f"# Sampling interval for temperature readings (minutes)\ndt_minutes: {float(c.get('dt_minutes',1.0))}")
-    try: open(CFG,"w",encoding="utf-8").write("\n".join(lines)+"\n")
-    except Exception as e: print(f"[WARN] Config write failed: {e}")
+    lines.append(f"dt_minutes: {float(c.get('dt_minutes',1.0))}  # Sampling interval (minutes)")
+    try:
+        with open(CFG,"w",encoding="utf-8") as f:
+            f.write("\n".join(lines)+"\n")
+    except Exception as e:
+        print(f"[WARN] Config write failed: {e}")
 
-def main():
-    tgt,wait_m,tol,cfg_obj=cfg(); cur,rng=get_state(); mn,mx=rng['min'],rng['max']
+def log_run(start_temp,tgt,final_tau,em,heating):
+    """Log completed run to CSV history"""
+    ts=time.strftime("%Y-%m-%d %H:%M:%S")
+    model="EKF" if em==2 else "EXP"
+    mode="heating" if heating else "cooling"
+    try:
+        with open("run_history.csv","a") as f:
+            if f.tell()==0:
+                f.write("Timestamp,Initial_Temp,Target_Temp,Tau_calc,Model,Mode\nYYYY-MM-DD HH:MM:SS,°C,°C,min,-,-\n")
+            f.write(f"{ts},{start_temp:.2f},{tgt:.2f},{final_tau:.2f},{model},{mode}\n")
+    except Exception as e:
+        print(f"[WARN] History log failed: {e}")
+
+def maybe_update_tau(c,cfg_obj,heating,tau_h_est,tau_c_est,start_temp):
+    """Update tau in config if tau_override enabled and starting from ambient"""
+    if int(c.get('tau_override',0))==1 and cfg_obj['idx']==0:
+        final_tau_unscaled=(tau_h_est if heating else tau_c_est)*FAST
+        ts=time.strftime("%Y-%m-%d %H:%M:%S")
+        key,info_key=("tau_heating","tau_heating_info") if heating else ("tau_cooling","tau_cooling_info")
+        print(f"[INFO] Updating {key} to {final_tau_unscaled:.2f}m (learned from EKF)")
+        c[key],c[info_key]=final_tau_unscaled,f"Updated {ts} | Start T={start_temp:.1f}°C"
+
+def run_single_setpoint(tgt,wait_m,tol,cfg_obj):
+    """Execute control loop for one setpoint (FAST mode)"""
     c=cfg_obj['c']
+    cur,rng=get_state(); mn,mx=rng['min'],rng['max']
     print(f"[INFO] [FASTx{int(FAST)}] Target {tgt}°C | Range {mn}–{mx}°C | Current {cur:.2f}°C | Tol ±{tol}°C")
-    if not(mn<=tgt<=mx): print(f"[ERROR] Target {tgt}°C outside [{mn},{mx}]"); sys.exit(1)
+    if not(mn<=tgt<=mx):
+        raise ConfigError(f"Target {tgt}°C outside valid range [{mn},{mx}]")
+    
     set_target(tgt)
     # Scale parameters for FAST mode
     dt_min=max(0.05,float(c.get('dt_minutes',1.0))/FAST)
@@ -138,6 +164,7 @@ def main():
     wait_scaled=max(0,int(round(wait_m/FAST)))
     sleep_s=max(0.5,dt_min*60.0); start_temp=cur
     em=int(c.get('eta_model',1))
+    
     if em==2: print("[INFO] ETA Model: Extended Kalman Filter (EKF) | T(t)=T∞+(T₀-T∞)e^(-t/τ)")
     else: print(f"[INFO] ETA Model: Exponential | T(t)=T∞+(T₀-T∞)e^(-t/τ), τ={(tau_h if tgt>start_temp else tau_c):.2f}m")
     print(f"[INFO] Monitoring with {dt_min:.2f}m updates (FAST x{int(FAST)}) …")
@@ -157,34 +184,38 @@ def main():
             eta_str=f"ETA~{eta:.1f}m" if eta else "ETA~--"; param_str=""
         ts=time.strftime("%H:%M:%S")
         print(f"[{ts}] {progress_bar(cur,tgt,start_temp)} {tag} {eta_str} | T={cur:.2f}°C{param_str}")
-        if abs(cur-tgt)<=tol: print(f"[INFO] Target reached in {(now-start)/60:.1f}m. Waiting {wait_scaled}m …"); break
+        if abs(cur-tgt)<=tol:
+            print(f"[INFO] Target reached in {(now-start)/60:.1f}m. Waiting {wait_scaled}m …")
+            break
         time.sleep(sleep_s)
+    
     time.sleep(wait_scaled*60); print("[INFO] Complete.")
     
-    # Log run history
+    # Log and update
     heating=tgt>start_temp; final_tau=(tau_h_est if heating else tau_c_est)*FAST
-    ts=time.strftime("%Y-%m-%d %H:%M:%S"); model="EKF" if em==2 else "EXP"; mode="heating" if heating else "cooling"
-    try:
-        with open("run_history.csv","a") as f:
-            if f.tell()==0:
-                f.write("Timestamp,Initial_Temp,Target_Temp,Tau_calc,Model,Mode\nYYYY-MM-DD HH:MM:SS,°C,°C,min,-,-\n")
-            f.write(f"{ts},{start_temp:.2f},{tgt:.2f},{final_tau:.2f},{model},{mode}\n")
-    except Exception as e: print(f"[WARN] History log failed: {e}")
+    log_run(start_temp,tgt,final_tau,em,heating)
+    maybe_update_tau(c,cfg_obj,heating,tau_h_est,tau_c_est,start_temp)
     
-    # Update tau if enabled (only from ambient, idx==0)
-    if int(c.get('tau_override',0))==1 and cfg_obj['idx']==0:
-        final_tau_unscaled=(tau_h_est if heating else tau_c_est)*FAST
-        ts=time.strftime("%Y-%m-%d %H:%M:%S")
-        key,info_key=("tau_heating","tau_heating_info") if heating else ("tau_cooling","tau_cooling_info")
-        print(f"[INFO] Updating {key} to {final_tau_unscaled:.2f}m (learned from EKF)")
-        c[key],c[info_key]=final_tau_unscaled,f"Updated {ts} | Start T={start_temp:.1f}°C"
-    
-    # Advance setpoint or write tau updates
+    # Advance setpoint if needed
     temps,idx=cfg_obj['temps'],cfg_obj['idx']
     if len(temps)>1 or int(c.get('tau_override',0))==1:
         ni=(idx+1)%len(temps) if len(temps)>1 else idx
         if len(temps)>1: print(f"[INFO] Advancing set index {idx}->{ni}")
         write_config(temps,ni,c)
+
+def main():
+    try:
+        tgt,wait_m,tol,cfg_obj=cfg()
+        run_single_setpoint(tgt,wait_m,tol,cfg_obj)
+    except KeyboardInterrupt:
+        print("\n[INFO] Interrupted by user. Shutting down cleanly.")
+        sys.exit(130)
+    except (ConfigError,DeviceError) as e:
+        print(f"[ERROR] {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"[ERROR] Unexpected error: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

@@ -8,7 +8,7 @@ Remote temperature control for Memmert IPP30 cooled incubators via the AtmoWEB R
 - **Multi-setpoint sequencing**: Configure `target_temperatures` (list) with `current_set_index`; script advances and wraps to the first after the last
 - **Smart monitoring**: Configurable interval (`dt_minutes`, default 1.0) for updates & ETA
 - **Dual ETA models**: 
-  - **Exponential (mode 1)**: Least-squares τ fit on recent data, uses fixed tau from config
+  - **Exponential (mode 1)**: Uses fixed τ from config only (no fitting)
   - **Extended Kalman Filter (mode 2)**: Real-time τ learning with gradient-limited convergence
 - **Adaptive tau learning**: EKF can update tau_heating/tau_cooling in config when `tau_override: 1` (only from ambient starts)
 - **Run history logging**: Automatic CSV logging with timestamp, temperatures, learned tau, model type, and heating/cooling mode
@@ -132,7 +132,7 @@ Script output shows real-time status with progress bar and ETA (interval reflect
 ```
 
 Each `#` in the progress bar represents 5% completion from start to target temperature.
-- **Exponential model**: Shows fixed τ in model info line (from config), estimates ETA using least-squares fit
+- **Exponential model**: Shows fixed τ in model info line (from config), estimates ETA using fixed tau only
 - **EKF model**: Shows evolving τ in each progress line, learns tau in real-time with gain-limited convergence
 
 ### Multi-setpoint behavior
@@ -240,10 +240,11 @@ pip install psutil  # For port conflict detection
 ## ETA Model Details
 
 ### Exponential Model (eta_model: 1)
-- Uses fixed `tau_heating`/`tau_cooling` from config
-- Optionally fits tau from recent data via least-squares on log-transformed thermal decay
+- Always uses `tau_heating`/`tau_cooling` from config (no fitting, no regression)
+- ETA is computed using the fixed tau value only
+- Does NOT update config file
 - Fast computation, no dependencies
-- Best for: Stable systems with known tau, quick setup
+- Best for: Stable systems, quick setup, when tau learning/persistence not needed
 
 ### Extended Kalman Filter (eta_model: 2)
 - 2-state EKF tracking [T_current, tau]
