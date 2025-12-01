@@ -1,3 +1,31 @@
+def check_manual_mode():
+    """Check if device is in Manual mode. If not, prompt user to abort current operation and switch to Manual."""
+    r = http_get(f"{BASE_URL}?CurOp=")
+    if r.status_code != 200:
+        raise DeviceError(f"HTTP {r.status_code} on CurOp query")
+    txt = r.text.strip()
+    if 'Manual' in txt:
+        return True
+    # Extract mode string for user
+    mode = txt
+    print(f"[WARN] Device is currently in mode: {mode}")
+    ans = input("Do you want to abort the current operation and switch to Manual mode to start heating/cooling? (y/n): ").strip().lower()
+    if ans == 'y':
+        print("[INFO] Sending abort command to device...")
+        r_abort = http_get(f"{BASE_URL}?ProgExit=")
+        if r_abort.status_code != 200:
+            raise DeviceError(f"Failed to abort program: HTTP {r_abort.status_code}")
+        time.sleep(2)  # Give device time to switch
+        # Re-check mode
+        r2 = http_get(f"{BASE_URL}?CurOp=")
+        txt2 = r2.text.strip()
+        if 'Manual' in txt2:
+            print("[INFO] Device is now in Manual mode.")
+            return True
+        else:
+            raise DeviceError(f"Device did not switch to Manual mode (CurOp={txt2})")
+    else:
+        raise DeviceError(f"User aborted: Device is in mode {mode}")
 import requests, yaml, time, sys, math
 try: import numpy as np
 except: np = None
@@ -56,8 +84,25 @@ def get_state():
         cur=float(d["Temp1Read"])
         rng={"min":float(d["TempSet_Range"]["min"]),"max":float(d["TempSet_Range"]["max"])}
         return cur,rng
-    except (KeyError,ValueError,TypeError) as e:
-        raise DeviceError(f"Invalid device response: {e}")
+    except Exception as e:
+        txt = r.text.strip()
+        # Fallback: parse AtmoWEB-style response
+        try:
+            # Example: '"Temp1Read": 19.531, TempSet_Range=unknown'
+            cur = None
+            if "Temp1Read" in txt:
+                # Handles both '"Temp1Read": 19.531' and 'Temp1Read=19.531'
+                import re
+                m = re.search(r'Temp1Read[":=\s]*([0-9.]+)', txt)
+                if m:
+                    cur = float(m.group(1))
+            rng = {"min": 0.0, "max": 70.0}  # fallback/default
+            if cur is not None:
+                return cur, rng
+            else:
+                raise DeviceError("No Temp1Read in device response")
+        except Exception as e2:
+            raise DeviceError(f"Invalid device response (unparsable): {e2}")
 
 def set_target(temp):
     """Set target temperature"""
@@ -180,7 +225,8 @@ def run_single_setpoint(tgt,wait_m,tol,cfg_obj):
         else:
             eta,ex=estimate_eta_exp(readings,tgt,tau_h,tau_c,tol); tag='[EXP]'
             eta_str=f"ETA~{eta:.1f}m" if eta else "ETA~--"; param_str=""
-        print(f"[INFO] {progress_bar(cur,tgt,start_temp)} {tag} {eta_str} | T={cur:.2f}°C{param_str}")
+        ts_disp = time.strftime("%H:%M:%S", time.localtime(now))
+        print(f"[INFO] {ts_disp} {progress_bar(cur,tgt,start_temp)} {tag} {eta_str} | T={cur:.2f}°C{param_str}")
         if abs(cur-tgt)<=tol:
             print(f"[INFO] Target reached in {(now-start)/60:.1f}m. Waiting {wait_m}m …")
             break
@@ -203,6 +249,7 @@ def run_single_setpoint(tgt,wait_m,tol,cfg_obj):
 def main():
     try:
         tgt,wait_m,tol,cfg_obj=cfg()
+        check_manual_mode()
         run_single_setpoint(tgt,wait_m,tol,cfg_obj)
     except KeyboardInterrupt:
         print("\n[INFO] Interrupted by user. Shutting down cleanly.")

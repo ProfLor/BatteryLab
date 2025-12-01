@@ -1,14 +1,18 @@
 # IPP30_TEMP_CNTRL.yaml
+
 # Configuration for Memmert IPP30 temperature control
+#
+# Device must be in "Active" mode (not just Manual) for heating/cooling to work.
+# Always set the last target temperature to room temperature to avoid the chamber running indefinitely at a setpoint.
 
 target_temperatures:  # Temperature sequence
-  - 0.0
-  - 70.0  # <-- current SetTemp
-  - 0.0
-current_set_index: 1  # Active setpoint (0-based)
+  - 40.0
+  - 40.0  # <-- current SetTemp
+  - 25.0
+current_set_index: 0  # Active setpoint (0-based)
 wait_time: 1  # Minutes to wait after reaching target
 tolerance: 0.2  # Temperature tolerance (°C)
-eta_model: 1  # 1=Exponential, 2=EKF
+eta_model: 2  # 1=Exponential, 2=EKF
 tau_override: 1  # 1=update tau with EKF, 0=keep user values
 tau_heating: 12.089613195912495  # Heating time constant (minutes)
 tau_heating_info: "Updated 2025-11-30 23:48:28 | Start T=22.0°C"

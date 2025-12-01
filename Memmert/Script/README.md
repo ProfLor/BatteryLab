@@ -59,7 +59,7 @@ Edit `IPP30_TEMP_CNTRL.yaml`:
 target_temperatures:
   - 25.0
   - 37.5  # <-- current SetTemp
-  - 15.0
+  - 25.0  # (final step to target room temperature in idle mode)
 current_set_index: 1        # 0-based index of active set temperature
 wait_time: 15               # Minutes to wait after stabilization
 tolerance: 0.5              # Acceptable deviation in °C
@@ -240,8 +240,7 @@ pip install psutil  # For port conflict detection
 ## ETA Model Details
 
 ### Exponential Model (eta_model: 1)
-- Always uses `tau_heating`/`tau_cooling` from config (no fitting, no regression)
-- ETA is computed using the fixed tau value only
+- ETA is computed using `tau_heating`/`tau_cooling` from config (no fitting, no regression)
 - Does NOT update config file
 - Fast computation, no dependencies
 - Best for: Stable systems, quick setup, when tau learning/persistence not needed
@@ -271,14 +270,25 @@ YYYY-MM-DD HH:MM:SS,°C,°C,min,-,-
 2025-12-01 14:45:10,22.00,0.00,14.12,EKF,cooling
 ```
 
-## Notes & Troubleshooting
 
-- **Device not found**: Verify IP address, network connection, power, and firewall settings.
+## Device Operation & Safety Notes
+
+### "Active" Mode Requirement
+The Memmert IPP30 must be in **Active** mode (not just Manual) for heating or cooling to occur. This is not clearly documented by the manufacturer. To enable Active mode, manually set a temperature and timer via the device's front panel. Once the system is running, it will accept and follow any setpoint sent by the script.
+
+### Last Setpoint Must Be Room Temperature
+**Important:** Always ensure the last entry in `target_temperatures` is set to room temperature. This prevents the chamber from remaining indefinitely at a high or low setpoint after the sequence completes, which could cause safety or energy issues.
+
+## Troubleshooting
+
+- **Device not found**: Verify IP address, network connection, power, and firewall settings. Make sure the device is set to allow remote control (*Fernbedienung: Schreiben+Lesen* or *Fernbedienung: Schreiben+Alarm*)
 - **Not in Manual mode**: Device must be in Manual mode for setpoints to be applied. Script exits with code 2.
+- **Device does not heat/cool**: The device must be active (not just manual) to change temperature, noticeable by fan noise. Workaround: turn of remote controll under "settings" and set a temperature and timer manually on the device. Once the system is running, turn of the timer (*--h:--m*) and switch back to remote control. The device will now accept setpoints from the script.
+
+## Notes
 - **Range validation**: Target temperature validated against device `TempSet_Range`. If unavailable, script exits with code 3.
 - **ETA accuracy**: Both models assume first-order exponential thermal dynamics T(t)=T∞+(T₀-T∞)e^(-t/τ). More accurate than linear regression.
 - **EKF convergence**: If tau jumps erratically, gain limits prevent instability. Increase `dt_minutes` or adjust Q/R matrices if needed.
 - **Tau learning**: For best results, run several cycles from ambient (idx=0) to let EKF converge before relying on learned tau values.
-- **Temperature ramps**: For complex multi-step profiles, create programs in AtmoCONTROL and trigger via REST (`ProgStart`).
 
 ---
