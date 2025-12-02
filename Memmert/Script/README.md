@@ -91,6 +91,23 @@ logging:
 - **Timeouts/retries:** Configurable in `memmert_control.py` (`TIMEOUT_S`, `RETRIES`).
 - **Simulator/testing:** See `memmert_control_fast.py` and `temp_chamber_sim.py` for advanced users.
 
+### EKF Parameter Tuning (Experienced Users Only)
+
+The EKF parameters in `IPP30_TEMP_CNTRL.yaml` under the `ekf:` section control the Kalman filter behavior:
+
+- **window_size:** Number of temperature samples used for rolling window fit (default: 20)
+- **outlier_threshold:** Robust z-score threshold for outlier detection (default: 4.0)
+- **fit_range:** Progress range `[start, end]` where tau is fitted (default: `[0.3, 0.7]`)
+  - Only fits tau during middle 30-70% of transient to avoid artifacts at start/end
+  - Outside this range, tau is frozen to prevent drift near equilibrium
+- **P_init:** Initial state covariance `[T, tau, Tinf]` (default: `[10.0, 2.0, 5.0]`)
+- **Q_process:** Process noise covariance `[T, tau, Tinf]` (default: `[0.0025, 0.0001, 0.000025]`)
+  - Lower values = more stable estimates, slower convergence
+  - Higher values = faster adaptation, more noise sensitivity
+- **R_measurement:** Measurement noise variance (default: 0.01)
+
+**Tip:** If tau overestimates or drifts, reduce `Q_process[1]` (tau process noise) or narrow the `fit_range`.
+
 ---
 
 ## Exit Codes
