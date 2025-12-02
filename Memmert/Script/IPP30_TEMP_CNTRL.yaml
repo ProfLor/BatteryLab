@@ -1,21 +1,30 @@
+
+
 # IPP30_TEMP_CNTRL.yaml
-
 # Configuration for Memmert IPP30 temperature control
-#
-# Device must be in "Active" mode (not just Manual) for heating/cooling to work.
-# Always set the last target temperature to room temperature to avoid the chamber running indefinitely at a setpoint.
 
-target_temperatures:  # Temperature sequence
-  - 40.0
-  - 40.0  # <-- current SetTemp
-  - 25.0
-current_set_index: 0  # Active setpoint (0-based)
-wait_time: 1  # Minutes to wait after reaching target
-tolerance: 0.2  # Temperature tolerance (°C)
-eta_model: 2  # 1=Exponential, 2=EKF
-tau_override: 1  # 1=update tau with EKF, 0=keep user values
-tau_heating: 12.089613195912495  # Heating time constant (minutes)
-tau_heating_info: "Updated 2025-11-30 23:48:28 | Start T=22.0°C"
-tau_cooling: 14.620473441372633  # Cooling time constant (minutes)
-tau_cooling_info: "Updated 2025-12-01 00:32:04 | Start T=0.0°C"
-dt_minutes: 1.0  # Sampling interval (minutes)
+# Device parameters
+device:
+  target_temperatures:  # List of setpoints (°C)
+    - 40.0
+    - 0.0  # <-- current SetTemp
+    - 25.0
+  current_set_index: 1  # Active setpoint (0-based)
+  wait_s: 60  # Wait time after reaching target (seconds)
+  tolerance: 0.5  # Allowed deviation from setpoint (°C)
+
+
+# ETA (Estimated Time of Arrival) model parameters
+eta_model:
+  model_type: 2  # 1=Exponential, 2=EKF
+  tau_override: 1  # 1=update tau with EKF, 0=keep user values
+  tau_heating: 3.9148961486833596  # Heating time constant (minutes)
+  tau_heating_info: "Updated 2025-12-02 11:17:25 | Start T=23.0°C"  # Info about tau_heating
+  tau_cooling: 14.62  # Cooling time constant (minutes)
+  tau_cooling_info: "Updated 2025-12-01 00:32:04 | Start T=0.0°C"  # Info about tau_cooling
+
+
+# Logging and sampling parameters
+logging:
+  dt_s: 60.0  # Main control sampling interval (seconds)
+  dt_logfile_s: 10.0  # Log file sampling interval (seconds)
