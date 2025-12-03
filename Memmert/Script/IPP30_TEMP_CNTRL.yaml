@@ -5,9 +5,9 @@
 
 device:
   target_temperatures:
-    - 40.0 # First setpoint
-    - 25.0 # ← Second setpoint
-  current_set_index: 1  # Index of active setpoint
+    - 40.0 # ← First setpoint
+    - 25.0 # Second setpoint
+  current_set_index: 0 # Index of active setpoint
   wait_s: 10  # Wait time after reaching target (seconds)
   tolerance: 0.5  # Allowed deviation from target (°C)
 
@@ -25,9 +25,10 @@ logging:
 
 # EKF parameters (only for experienced users)
 # Tuning these parameters affects EKF convergence and stability
+# Note: 3-state EKF estimates [T_current, tau, Tinf] for robust convergence
 ekf:
   window_size: 20  # Number of samples for rolling window fit
   outlier_threshold: 4.0  # Robust z-score threshold for outlier detection
-  P_init: [0.5, 5.0, 2.0]  # Initial state covariance [T, tau, Tinf]
-  Q_process: [0.0025, 0.002, 0.0005]  # Process noise [T, tau, Tinf] Q_process: [0.0025, 0.002, 0.0005]  # Balanced increase for both tau and Tinf
+  P_init: [10.0, 5.0, 1.0]  # Initial state covariance [T, tau, Tinf] - allow tau uncertainty
+  Q_process: [0.0025, 0.01, 0.0001]  # Process noise [T, tau, Tinf] - tau can adapt, Tinf stable
   R_measurement: 0.01  # Measurement noise variance

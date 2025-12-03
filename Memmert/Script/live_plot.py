@@ -1,12 +1,10 @@
 import os
-import time
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import datetime
-from scipy.optimize import curve_fit
 
-# Path to the latest log file (update as needed)
+# Path to the latest log file
 SCRIPT_DIR = os.path.abspath(os.path.dirname(__file__))
 LOG_DIR = os.path.join(SCRIPT_DIR, "log-files")
 
@@ -59,91 +57,11 @@ def parse_logfile(logfile):
                 continue
     return np.array(times), np.array(temps), timestamps, np.array(tau_mins), np.array(tinfs), np.array(t0s)
 
-# Extrapolate using latest tau and T_inf
-def extrapolate_curve(times, temps, tau, Tinf, horizon=3600, dt=10):
-    if tau is None or np.isnan(tau) or tau < 1e-3:
-        return np.array([]), np.array([])
-    # Start from the first measurement, not the last
-    t0 = times[0]
-    T0 = temps[0]
-    t_ex = np.arange(t0, t0 + horizon, dt)
-    T_ex = Tinf + (T0 - Tinf) * np.exp(-(t_ex - t0) / (tau * 60.0))
-    return t_ex, T_ex
-
-# Store past extrapolations for fading effect
-class ExtrapolationHistory:
-    def __init__(self, max_curves=10):
-        self.curves = []
-        self.max_curves = max_curves
-    def add(self, t, y):
-        self.curves.append((t, y))
-        if len(self.curves) > self.max_curves:
-            self.curves.pop(0)
-    def get(self):
-        return self.curves
-
 def live_plot():
-    hist = ExtrapolationHistory(max_curves=8)
     fig, ax = plt.subplots(figsize=(10, 5))
     plt.style.use('ggplot')
 
     import matplotlib.dates as mdates
-    def exp_model(t, tau, Tinf, T0):
-        return Tinf - (Tinf - T0) * np.exp(-t / tau)
-
-    def rolling_window_fit(times, temps, window=20, tol=0.5, target_temp=40.0):
-        etas, taus, tinfs, pcts = [], [], [], []
-        for i in range(len(times)):
-            start = max(0, i - window + 1)
-            t_window = np.array(times[start:i+1], dtype=float)
-            temps_window = np.array(temps[start:i+1], dtype=float)
-            if len(t_window) < 5 or np.ptp(temps_window) < 0.5:
-                tau = np.nan
-                Tinf = target_temp
-                eta = np.nan
-                pct = 0.0
-            else:
-                try:
-                    T0 = temps_window[0]
-                    # Use mean/min/max of window for initial guess and bounds
-                    Tinf_guess = np.mean(temps_window)
-                    Tinf_min = min(np.min(temps_window), target_temp)
-                    Tinf_max = max(np.max(temps_window), target_temp)
-                    # Make sure bounds are plausible
-                    popt, _ = curve_fit(
-                        lambda t, tau, Tinf: exp_model(t, tau, Tinf, T0),
-                        t_window - t_window[0], temps_window,
-                        p0=[300, Tinf_guess],
-                        bounds=([10, Tinf_min], [5000, Tinf_max+10])
-                    )
-                    tau, Tinf = popt
-                    # If fit is implausible, fall back to last measured temp or target
-                    if not np.isfinite(Tinf) or abs(Tinf) > 1000:
-                        Tinf = temps_window[-1]
-                    T_now = temps_window[-1]
-                    if abs(Tinf - T_now) < 0.1:
-                        eta = 0.0
-                    else:
-                        log_arg = (target_temp - Tinf) / (T_now - Tinf)
-                        if log_arg > 0:
-                            t_eta = -tau * np.log(log_arg)
-                            eta = max(0.0, t_eta / 60.0)
-                        else:
-                            eta = np.nan
-                    t_now = t_window[-1]
-                    pct = min(100.0, 100.0 * (t_now - t_window[0]) / (5 * tau)) if tau > 0 else 0.0
-                    if abs(T_now - target_temp) <= tol:
-                        pct = 100.0
-                except Exception:
-                    tau = np.nan
-                    Tinf = temps_window[-1]
-                    eta = np.nan
-                    pct = 0.0
-            etas.append(eta)
-            taus.append(tau)
-            tinfs.append(Tinf)
-            pcts.append(pct)
-        return np.array(etas), np.array(taus), np.array(tinfs), np.array(pcts)
 
     def animate(frame):
         logfile = get_latest_logfile()
@@ -168,7 +86,7 @@ def live_plot():
         for i in reversed(range(len(times))):
             tau_i = tau_mins[i] if not np.isnan(tau_mins[i]) else None
             Tinf_i = tinfs[i] if not np.isnan(tinfs[i]) else temps[i]
-            T_current = temps[i]  # Start prediction from current temperature, not T0
+            T_current = temps[i]  # Start prediction from current temperature
             t_current = times[i]
             if tau_i and tau_i > 1e-3:
                 # Predict forward from current temperature using fitted tau and Tinf
@@ -178,7 +96,7 @@ def live_plot():
                     current_ts = datetime.datetime.strptime(f'{today} {timestamps[i]}', "%Y-%m-%d %H:%M:%S")
                     extrap_times = [current_ts + datetime.timedelta(seconds=float(tt - t_current)) for tt in t_ex]
                     extrap_times_fmt = [mdates.date2num(et) for et in extrap_times]
-                    fade_curves.append((extrap_times_fmt, T_ex, tau_i, Tinf_i))
+                    fade_curves.append((extrap_times_fmt, T_ex, tau_i, Tinf_i, T_current))
                     if len(fade_curves) >= N_MAX:
                         break
 
@@ -188,7 +106,7 @@ def live_plot():
         # fade_curves[0] is most recent, fade_curves[-1] is oldest
         # Plot from index n-1 (oldest) down to 0 (newest) so newest draws on top
         for idx in reversed(range(n_fade)):
-            t, y, tau_j, Tinf_j = fade_curves[idx]
+            t, y, tau_j, Tinf_j, T_start = fade_curves[idx]
             # idx=0 is most recent (should be black = fade 0.0)
             # idx=1 is 1 step older (should be fade 0.05 = 5% gray)
             # Increase by 5% per step for more visible gradient
@@ -202,22 +120,28 @@ def live_plot():
                 labels_used.add('Prediction')
                 ax.axhline(Tinf_j, color='red', linestyle='--', linewidth=1.5, zorder=zorder_val+1, label='T∞')
                 labels_used.add('T∞')
-                # Add vertical line at estimated finish time (ETA from most recent prediction)
+                # Add vertical line at estimated finish time using both convergence criteria
                 if len(times) > 0:
-                    # Get the most recent ETA from the fade_curves data or calculate from current point
-                    # Find where prediction crosses within tolerance of target
-                    target_temp = Tinf_j  # Use predicted Tinf as target
                     tolerance = 0.5  # Match the tolerance from config
-                    # Find first time where |T - Tinf| <= tolerance
-                    finish_idx = None
-                    for j in range(len(y)):
-                        if abs(y[j] - target_temp) <= tolerance:
-                            finish_idx = j
-                            break
-                    if finish_idx is not None:
-                        finish_time = t[finish_idx]
-                        ax.axvline(finish_time, color='#ff8800', linestyle='--', linewidth=1.5, zorder=zorder_val+1, label='Est. Finish')
-                        labels_used.add('Est. Finish')
+                    # Criterion 1: When temperature reaches within tolerance
+                    # eta = -tau * ln(tolerance / |T_start - Tinf|)
+                    err = abs(T_start - Tinf_j)
+                    if err > tolerance:
+                        # tau_j is in minutes, convert to seconds
+                        eta_temp_seconds = -tau_j * 60.0 * np.log(tolerance / err)
+                    else:
+                        eta_temp_seconds = 0.0
+                    
+                    # Criterion 2: Minimum 5τ settling time (99.3%)
+                    eta_time_seconds = 5 * tau_j * 60.0
+                    
+                    # Finish time is the MAXIMUM of both criteria
+                    eta_seconds = max(eta_temp_seconds, eta_time_seconds)
+                    
+                    # Convert to matplotlib date offset
+                    finish_time = t[0] + eta_seconds / 86400.0
+                    ax.axvline(finish_time, color='#ff8800', linestyle='--', linewidth=1.5, zorder=zorder_val+1, label='Est. Finish')
+                    labels_used.add('Est. Finish')
             else:
                 # Older curves: faded with gray-tinted reference lines
                 ax.plot(t, y, color=color, linewidth=1, zorder=zorder_val, label='_nolegend_')
@@ -226,18 +150,18 @@ def live_plot():
                 red_fade = (fade + (1-fade)*1.0, fade + (1-fade)*0.0, fade + (1-fade)*0.0)
                 ax.axhline(Tinf_j, color=red_fade, linestyle='--', linewidth=1.0, alpha=0.5, zorder=zorder_val+1, label='_nolegend_')
                 
-                # Faded Est. Finish line (orange to gray)
-                target_temp = Tinf_j
+                # Faded Est. Finish line (orange to gray) using both convergence criteria
                 tolerance = 0.5
-                finish_idx = None
-                for j in range(len(y)):
-                    if abs(y[j] - target_temp) <= tolerance:
-                        finish_idx = j
-                        break
-                if finish_idx is not None:
-                    finish_time = t[finish_idx]
-                    orange_fade = (fade + (1-fade)*1.0, fade + (1-fade)*0.53, fade + (1-fade)*0.0)
-                    ax.axvline(finish_time, color=orange_fade, linestyle='--', linewidth=1.0, alpha=0.5, zorder=zorder_val+1, label='_nolegend_')
+                err = abs(T_start - Tinf_j)
+                if err > tolerance:
+                    eta_temp_seconds = -tau_j * 60.0 * np.log(tolerance / err)
+                else:
+                    eta_temp_seconds = 0.0
+                eta_time_seconds = 5 * tau_j * 60.0
+                eta_seconds = max(eta_temp_seconds, eta_time_seconds)
+                finish_time = t[0] + eta_seconds / 86400.0
+                orange_fade = (fade + (1-fade)*1.0, fade + (1-fade)*0.53, fade + (1-fade)*0.0)
+                ax.axvline(finish_time, color=orange_fade, linestyle='--', linewidth=1.0, alpha=0.5, zorder=zorder_val+1, label='_nolegend_')
 
         # --- Plot layering: prediction lines first, then measured points on top ---
 

@@ -23,12 +23,16 @@ def check_manual_mode():
             print("[INFO] Device is now in Manual mode.")
             return True
         else:
-            raise DeviceError(f"Device did not switch to Manual mode (CurOp={txt2})")
+            raise ManualModeError(f"Device did not switch to Manual mode (CurOp={txt2})")
     else:
-        raise DeviceError(f"User aborted: Device is in mode {mode}")
+        raise ManualModeError(f"User aborted: Device is in mode {mode}")
 import requests, yaml, time, sys, math
-try: import numpy as np
-except: np = None
+try: 
+    import numpy as np
+    from thermal_estimator import ThermalEstimator
+except ImportError as e:
+    np = None
+    print(f"[WARN] Could not import required modules: {e}")
 
 # Production controller for Memmert IPP30 temperature chamber
 BASE_URL="http://192.168.96.21/atmoweb"; CFG="IPP30_TEMP_CNTRL.yaml"
@@ -37,6 +41,7 @@ TARGET_THRESHOLD=0.1  # °C threshold for "target reached"
 
 class ConfigError(Exception): pass
 class DeviceError(Exception): pass
+class ManualModeError(Exception): pass
 
 def cfg():
     """Load config: returns (target, wait_min, tolerance, config_dict)"""
@@ -86,9 +91,9 @@ def http_get(url):
         try: return requests.get(url,timeout=TIMEOUT_S)
         except (requests.exceptions.Timeout,requests.exceptions.ConnectionError) as e:
             if i<RETRIES: print(f"[WARN] Retry {i}/{RETRIES}"); time.sleep(RETRY_DELAY_S)
-            else: raise DeviceError(f"Device unreachable after {RETRIES} retries")
+            else: raise ConnectionError(f"Device unreachable after {RETRIES} retries")
         except requests.exceptions.RequestException as e:
-            raise DeviceError(f"HTTP request failed: {e}")
+            raise ConnectionError(f"HTTP request failed: {e}")
 
 def get_state():
     """Returns (current_temp, range_dict)"""
@@ -144,74 +149,40 @@ def progress_bar(cur,tgt,start,w=20):
 def estimate_eta_ekf(readings, target, tau_h, tau_c, dt, ekf_params=None):
     """Extended Kalman Filter for tau, T_infty estimation and ETA prediction.
     All time units in SECONDS internally.
+    
+    Uses modular ThermalEstimator with 3-state EKF: [T_current, tau, Tinf]
     """
     if np is None or len(readings) < 2:
         return None, {}
+    
     # Load EKF parameters from config or use defaults
     if ekf_params is None:
         ekf_params = {}
-    window_size = int(ekf_params.get('window_size', 20))
-    enable_outlier_detection = bool(ekf_params.get('enable_outlier_detection', True))
-    outlier_threshold = float(ekf_params.get('outlier_threshold', 4.0))
-    min_transient_delta_C = float(ekf_params.get('min_transient_delta_C', 0.5))
-    P_init = ekf_params.get('P_init', [10.0, 2.0, 5.0])
-    Q_process = ekf_params.get('Q_process', [0.0025, 0.0001, 0.000025])
-    R_measurement = float(ekf_params.get('R_measurement', 0.01))
     
-    # Use only the last N samples for estimation (moving window)
-    w = readings[-window_size:]
-    temps = [x for _, x in w]
-    T0, cur = temps[0], temps[-1]
-    # Outlier detection: skip update if latest reading is a robust outlier
-    # Only apply after window is full and transient has started (avoid false positives during slow initial rise)
-    if enable_outlier_detection and len(temps) >= window_size and abs(cur - T0) > min_transient_delta_C:
-        med = np.median(temps)
-        mad = np.median(np.abs(temps - med))
-        if mad < 1e-6:
-            mad = 1e-6  # avoid div by zero
-        z = 0.6745 * (cur - med) / mad
-        if abs(z) > outlier_threshold:
-            # Outlier detected, skip update
-            return None, {}
+    # Determine if heating or cooling
+    cur = readings[-1][1]
     heating = target > cur
-    tau0 = tau_h if heating else tau_c  # tau in seconds
-    Tinf0 = float(target)
-    # 3-state EKF: [T_current, tau (seconds), T_infty]
-    x = np.array([T0, tau0, Tinf0], dtype=float)
-    P = np.diag(P_init)
-    Q = np.diag(Q_process)
-    R = R_measurement
-    H = np.array([1.0, 0.0, 0.0])
-    for i in range(1, len(temps)):
-        Tm = temps[i]
-        tau_k = max(x[1], 1e-3)  # tau in seconds
-        Tinf_k = x[2]
-        Tp = x[0]  # Use previous state estimate, not raw measurement
-        a = np.exp(-dt / tau_k)  # both dt and tau in seconds
-        # Jacobian: ∂T/∂τ = (dt/τ²)(Tp-Tinf)e^(-dt/τ), ∂T/∂Tinf = 1-e^(-dt/τ)
-        A = np.array([
-            [a, (dt / tau_k ** 2) * (Tp - Tinf_k) * a, 1 - a],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ])
-        # Predict
-        x_pred = np.array([a * Tp + (1 - a) * Tinf_k, x[1], x[2]])
-        P_pred = A @ P @ A.T + Q
-        # Update with natural Kalman gains
-        K = (P_pred @ H) / (H @ P_pred @ H + R)
-        x = x_pred + K * (Tm - H @ x_pred)
-        P = P_pred - np.outer(K, K) * (H @ P_pred @ H + R)
-        P = 0.5 * (P + P.T)  # Enforce symmetry
-        P[P < 1e-6] = 1e-6  # Prevent negative eigenvalues
-    tau = max(float(x[1]), 1e-3)  # tau in seconds
-    Tinf = float(x[2])
-    err = abs(cur - Tinf)
-    # Use tolerance from ekf_params, fallback to 0.5 if not provided
-    tol_threshold = float(ekf_params.get('tolerance', 0.5))
-    if err < tol_threshold:
-        return 0.0, {"tau": tau, "Tinf": Tinf, "T0": T0}
-    eta = max(0.0, -tau * np.log(tol_threshold / err))  # ETA in seconds
-    return eta, {"tau": tau, "Tinf": Tinf, "T0": T0}
+    tau_init = tau_h if heating else tau_c
+    
+    # Create estimator (stateless - creates new EKF each call)
+    estimator = ThermalEstimator(ekf_params)
+    
+    # Run estimation
+    result = estimator.update(readings, tau_init, target, dt)
+    
+    if not result:
+        return None, {}
+    
+    # Extract estimates
+    tau = result['tau']
+    Tinf = result['Tinf']
+    T0 = result['T0']
+    residuals = result.get('residuals', [])
+    
+    # Compute ETA
+    eta = estimator.estimate_eta(cur, Tinf, tau)
+    
+    return eta, {"tau": tau, "Tinf": Tinf, "T0": T0, "residuals": residuals}
 
 def estimate_eta_exp(readings,target,tau_h,tau_c,tol):
     """Exponential model with fixed tau from config (no fitting)"""
@@ -532,14 +503,22 @@ def main():
     except KeyboardInterrupt:
         print("\n[INFO] Interrupted by user. Shutting down cleanly.")
         sys.exit(130)
-    except (ConfigError,DeviceError) as e:
+    except ManualModeError as e:
         print(f"[ERROR] {e}")
-        print("[ERROR] Exit code 1: Device not connected or not responding.")
+        print("[ERROR] Exit code 2: Device not in Manual mode.")
+        sys.exit(2)
+    except (ConnectionError, TimeoutError) as e:
+        print(f"[ERROR] {e}")
+        print("[ERROR] Exit code 1: Device not responding.")
         sys.exit(1)
+    except (ConfigError, DeviceError) as e:
+        print(f"[ERROR] {e}")
+        print("[ERROR] Exit code 3: Device error.")
+        sys.exit(3)
     except Exception as e:
         print(f"[ERROR] Unexpected error: {e}")
-        print("[ERROR] Exit code 1: Device not connected or not responding.")
-        sys.exit(1)
+        print("[ERROR] Exit code 3: Device error.")
+        sys.exit(3)
 
 if __name__ == "__main__":
     main()
