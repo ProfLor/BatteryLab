@@ -9,6 +9,11 @@ import numpy as np
 from thermal_model import ThermalModel
 from ekf import ExtendedKalmanFilter
 
+# ========== CONSTANTS ==========
+MIN_SAMPLES_FOR_OUTLIER_DETECTION = 5
+MAD_EPSILON = 1e-6  # Minimum MAD to prevent division by zero
+ROBUST_ZSCORE_CONSTANT = 0.6745  # Median absolute deviation to standard deviation conversion factor
+
 
 class ThermalEstimator:
     """
@@ -18,7 +23,7 @@ class ThermalEstimator:
     State vector: x = [T_current, tau, T_infty] (3 states)
     """
     
-    def __init__(self, ekf_params):
+    def __init__(self, ekf_params: dict) -> None:
         """
         Initialize thermal estimator
         
@@ -30,6 +35,9 @@ class ThermalEstimator:
                 - Q_process: Process noise [T, tau, Tinf]
                 - R_measurement: Measurement noise
                 - tolerance: Temperature tolerance for ETA calculation
+                
+        Raises:
+            ValueError: If numeric parameters cannot be converted to float/int
         """
         self.model = ThermalModel()
         self.ekf_params = ekf_params
@@ -45,34 +53,46 @@ class ThermalEstimator:
         # EKF state (initialized on first call)
         self.ekf = None
     
-    def _is_outlier(self, temps, current_temp):
+    def _is_outlier(self, temps: np.ndarray, current_temp: float) -> bool:
         """
         Robust outlier detection using MAD (Median Absolute Deviation)
+        
+        The constant 0.6745 converts MAD to standard deviation equivalent,
+        making the robust z-score comparable to traditional z-scores.
         
         Args:
             temps: Array of recent temperatures
             current_temp: Latest temperature to check
             
         Returns:
-            bool: True if current_temp is an outlier
+            True if current_temp is an outlier based on robust z-score
         """
         # Only apply after we have enough samples
-        if len(temps) < 5:
+        if len(temps) < MIN_SAMPLES_FOR_OUTLIER_DETECTION:
             return False
         
         # Robust z-score using MAD
-        med = np.median(temps)
-        mad = np.median(np.abs(temps - med))
+        median_temp = np.median(temps)
+        mad = np.median(np.abs(temps - median_temp))
         
-        if mad < 1e-6:
-            mad = 1e-6  # Avoid division by zero
+        if mad < MAD_EPSILON:
+            mad = MAD_EPSILON  # Avoid division by zero
         
-        z = 0.6745 * (current_temp - med) / mad
-        return abs(z) > self.outlier_threshold
+        robust_zscore = ROBUST_ZSCORE_CONSTANT * (current_temp - median_temp) / mad
+        return abs(robust_zscore) > self.outlier_threshold
     
-    def update(self, readings, tau_init, target, dt):
+    def update(
+        self, 
+        readings: list[tuple[float, float]], 
+        tau_init: float, 
+        target: float, 
+        dt: float
+    ) -> dict:
         """
         Update estimator with new temperature readings
+        
+        Processes readings through rolling window, detects outliers,
+        initializes EKF on first call, and returns parameter estimates.
         
         Args:
             readings: List of (timestamp, temperature) tuples
@@ -81,29 +101,30 @@ class ThermalEstimator:
             dt: Time step between samples (seconds)
             
         Returns:
-            dict: Estimation results with keys:
+            Dictionary with estimation results:
                 - tau: Estimated time constant (seconds)
                 - Tinf: Estimated asymptotic temperature (°C)
                 - T0: Window's first temperature (°C)
                 - residuals: Diagnostic information
+            Empty dict if insufficient data or outlier detected
         """
         if len(readings) < 2:
             return {}
         
         # Use rolling window for estimation
-        w = readings[-self.window_size:]
-        temps = np.array([x for _, x in w])
-        T0 = temps[0]
-        T_current = temps[-1]
+        window_readings = readings[-self.window_size:]
+        temps = np.array([temp for _, temp in window_readings])
+        initial_temp = temps[0]
+        current_temp = temps[-1]
         
         # Outlier detection on latest sample
-        if self._is_outlier(temps, T_current):
+        if self._is_outlier(temps, current_temp):
             return {}  # Skip this update
         
         # Initialize EKF on first call
         if self.ekf is None:
             # 3-state: [T_current, tau, Tinf]
-            x0 = np.array([T0, tau_init, target])
+            x0 = np.array([initial_temp, tau_init, target])
             P0 = np.diag(self.ekf_params.get('P_init', [10.0, 2.0, 5.0]))
             Q = np.diag(self.ekf_params.get('Q_process', [0.0025, 0.001, 0.004]))
             
@@ -121,20 +142,23 @@ class ThermalEstimator:
         
         # Extract final estimates
         x_final = self.ekf.get_state()
-        T_est = float(x_final[0])  # Estimated temperature
+        estimated_temp = float(x_final[0])  # Estimated temperature
         tau = max(float(x_final[1]), self.model.MIN_TAU)  # Estimated tau
         Tinf = float(x_final[2])  # Estimated Tinf
         
         return {
             'tau': tau,
             'Tinf': Tinf,
-            'T0': T0,
+            'T0': initial_temp,
             'residuals': self.ekf.get_residuals()
         }
     
-    def estimate_eta(self, T_current, Tinf, tau):
+    def estimate_eta(self, T_current: float, Tinf: float, tau: float) -> float:
         """
         Estimate time to reach target temperature
+        
+        Uses exponential decay model to predict time until temperature
+        reaches within tolerance of asymptotic temperature.
         
         Args:
             T_current: Current temperature (°C)
@@ -142,7 +166,7 @@ class ThermalEstimator:
             tau: Time constant (seconds)
             
         Returns:
-            float: ETA in seconds, or 0.0 if within tolerance
+            ETA in seconds, or 0.0 if already within tolerance
         """
         err = abs(T_current - Tinf)
         

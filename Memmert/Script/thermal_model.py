@@ -11,93 +11,101 @@ Dynamics: dT/dt = (T_infty - T) / tau
 """
 import numpy as np
 
+# ========== CONSTANTS ==========
+MIN_TAU_SECONDS = 1e-3  # Minimum tau to prevent division by zero (seconds)
+JACOBIAN_ZERO = 0.0  # Zero elements in Jacobian for constant parameters
+
 
 class ThermalModel:
     """Thermal dynamics model using Newton's law of cooling (3-state)"""
     
-    def __init__(self):
-        # Constants
-        self.MIN_TAU = 1e-3  # Minimum tau to prevent division by zero (seconds)
-        self.JACOBIAN_CLAMP_THRESHOLD = 0.05  # °C - clamp Jacobian when near equilibrium
+    def __init__(self) -> None:
+        """Initialize thermal model with Newton's law of cooling dynamics"""
+        pass
     
-    def f(self, x, dt):
+    def f(self, x: np.ndarray, dt: float) -> np.ndarray:
         """
         State evolution function: x(k+1) = f(x(k), dt)
         
-        Temperature evolves according to Newton's law
-        Parameters [tau, Tinf] evolve by process noise only
+        Temperature evolves according to Newton's law of cooling.
+        Parameters [tau, Tinf] remain constant (evolution by process noise in EKF).
         
         Args:
             x: State vector [T_current, tau, T_infty]
             dt: Time step (seconds)
             
         Returns:
-            x_next: Next state vector [T_current, tau, T_infty]
+            Next state vector [T_next, tau, T_infty]
         """
-        T_current, tau, Tinf = x
-        tau = max(tau, self.MIN_TAU)
+        current_temp, tau, asymptotic_temp = x
+        tau = max(tau, MIN_TAU_SECONDS)
         
         # Temperature evolves: T(t+dt) = Tinf + (T - Tinf) * exp(-dt/tau)
-        a = np.exp(-dt / tau)
-        T_next = Tinf + (T_current - Tinf) * a
+        decay_factor = np.exp(-dt / tau)
+        next_temp = asymptotic_temp + (current_temp - asymptotic_temp) * decay_factor
         
         # Parameters stay constant (evolve only by process noise in EKF)
-        return np.array([T_next, tau, Tinf])
+        return np.array([next_temp, tau, asymptotic_temp])
     
-    def F(self, x, dt):
+    def F(self, x: np.ndarray, dt: float) -> np.ndarray:
         """
         Jacobian of state evolution: ∂f/∂x
         
+        Computes partial derivatives of next state with respect to current state.
+        Used by EKF to propagate covariance matrix.
+        
         Args:
             x: State vector [T_current, tau, T_infty]
             dt: Time step (seconds)
             
         Returns:
-            F: 3x3 Jacobian matrix
+            3x3 Jacobian matrix of partial derivatives
         """
-        T_current, tau, Tinf = x
-        tau = max(tau, self.MIN_TAU)
+        current_temp, tau, asymptotic_temp = x
+        tau = max(tau, MIN_TAU_SECONDS)
         
-        a = np.exp(-dt / tau)
-        dT = T_current - Tinf
+        decay_factor = np.exp(-dt / tau)
+        temp_difference = current_temp - asymptotic_temp
         
+        # Partial derivatives:
         # ∂T_next/∂T_current = exp(-dt/tau)
         # ∂T_next/∂tau = (dt/tau²)(T - Tinf) * exp(-dt/tau)
         # ∂T_next/∂Tinf = 1 - exp(-dt/tau)
-        F = np.array([
-            [a, (dt / tau**2) * dT * a, 1 - a],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0]
+        jacobian = np.array([
+            [decay_factor, (dt / tau**2) * temp_difference * decay_factor, 1 - decay_factor],
+            [JACOBIAN_ZERO, 1.0, JACOBIAN_ZERO],
+            [JACOBIAN_ZERO, JACOBIAN_ZERO, 1.0]
         ])
         
-        return F
+        return jacobian
     
-    def h(self, x):
+    def h(self, x: np.ndarray) -> float:
         """
         Measurement prediction function: z_predicted = h(x)
         
-        We measure temperature directly, so h(x) = T_current
+        We measure temperature directly, so measurement equals first state component.
         
         Args:
             x: State vector [T_current, tau, T_infty]
             
         Returns:
-            z_predicted: Predicted temperature measurement (scalar)
+            Predicted temperature measurement (scalar)
         """
-        T_current = x[0]
-        return T_current
+        current_temp = x[0]
+        return float(current_temp)
     
-    def H(self, x):
+    def H(self, x: np.ndarray) -> np.ndarray:
         """
         Jacobian of measurement function: ∂h/∂x
         
-        Since h(x) = T_current (first element of state), H = [1, 0, 0]
+        Since measurement equals T_current (first state), the Jacobian is [1, 0, 0].
+        Used by EKF to compute innovation covariance and Kalman gain.
         
         Args:
             x: State vector [T_current, tau, T_infty]
             
         Returns:
-            H: 1x3 measurement Jacobian [∂z/∂T, ∂z/∂tau, ∂z/∂Tinf]
+            1x3 measurement Jacobian [∂z/∂T, ∂z/∂tau, ∂z/∂Tinf]
         """
-        H = np.array([1.0, 0.0, 0.0])
-        return H
+        measurement_jacobian = np.array([1.0, JACOBIAN_ZERO, JACOBIAN_ZERO])
+        return measurement_jacobian
